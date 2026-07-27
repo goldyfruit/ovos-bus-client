@@ -264,6 +264,20 @@ class MessageBusClient:
             SessionManager.update(sess)
         self.emitter.emit('message', message)
         self.emitter.emit(parsed_message.msg_type, parsed_message)
+        # Bridge namespace counterparts to LOCAL topic listeners. The
+        # counterpart is deliberately not emitted on the raw "message"
+        # firehose or sent back over the websocket: one logical event must
+        # remain one wire frame.
+        for topic in self._translator.counterpart_topics(parsed_message.msg_type):
+            translated = self._translator.translate_payload(
+                from_topic=parsed_message.msg_type,
+                to_topic=topic,
+                data=parsed_message.data,
+            )
+            self.emitter.emit(
+                topic,
+                parsed_message.forward(topic, translated),
+            )
 
     def on_default_session_update(self, message):
         new_session = message.data["session_data"]
@@ -289,12 +303,10 @@ class MessageBusClient:
         """
         self._ensure_session(message)
 
+        # Namespace compatibility is handled locally by each receiver in
+        # on_message. Sending a counterpart as a second websocket frame makes
+        # catch-all consumers observe and forward one logical event twice.
         self._send(message)
-
-        # also put the namespace counterpart(s) on the wire (per the flags); the
-        # mirror is sent directly, never re-translated.
-        for topic in self._translator.counterpart_topics(message.msg_type):
-            self._send(message.forward(topic, message.data))
 
     def emit_checked(self, message: Message):
         """Emit a message and raise websocket send failures to the caller."""

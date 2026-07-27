@@ -9,17 +9,19 @@ once — without suppressing two genuine same-topic events.
 """
 import json
 import unittest
-from threading import Event
+from threading import Event, RLock
 from unittest.mock import MagicMock, patch
+
+from pyee import EventEmitter
 
 from ovos_bus_client.client.client import MessageBusClient, _bus_flag
 from ovos_bus_client.message import Message
 from ovos_spec_tools import NamespaceTranslator
 
 
-def _client(modernize=True, emit_legacy=True):
+def _client(modernize=True, emit_legacy=True, emitter=None):
     c = MessageBusClient.__new__(MessageBusClient)
-    c.emitter = MagicMock()
+    c.emitter = emitter if emitter is not None else MagicMock()
     c.client = MagicMock()
     c._translator = NamespaceTranslator(modernize=modernize, emit_legacy=emit_legacy)
     c._handler_guards = {}
@@ -29,7 +31,17 @@ def _client(modernize=True, emit_legacy=True):
     c.connected_event.set()
     c.started_running = True
     c.session_id = "default"
+    c._send_lock = RLock()
     return c
+
+
+def _recv_client(modernize=True, emit_legacy=True):
+    """Build a client whose receive-side local dispatch is observable."""
+    return _client(
+        modernize=modernize,
+        emit_legacy=emit_legacy,
+        emitter=EventEmitter(),
+    )
 
 
 def _sent_types(c):
@@ -51,19 +63,18 @@ class TestDefaultsOn(unittest.TestCase):
             self.assertFalse(_bus_flag("OVOS_BUS_EMIT_LEGACY", "emit_legacy", default=True))
 
 
-class TestEmitTranslation(unittest.TestCase):
-    def test_legacy_emit_adds_spec(self):
+class TestEmitSendsOnce(unittest.TestCase):
+    def test_legacy_emit_sends_once(self):
         c = _client()
         c.emit(Message("speak", {"utterance": "hi"}))
-        self.assertEqual(_sent_types(c), ["speak", "ovos.utterance.speak"])
+        self.assertEqual(_sent_types(c), ["speak"])
 
-    def test_spec_emit_adds_legacy(self):
+    def test_spec_emit_sends_once(self):
         c = _client()
         c.emit(Message("ovos.utterance.handle", {"utterances": ["hi"]}))
-        self.assertEqual(_sent_types(c),
-                         ["ovos.utterance.handle", "recognizer_loop:utterance"])
+        self.assertEqual(_sent_types(c), ["ovos.utterance.handle"])
 
-    def test_unmapped_never_translated(self):
+    def test_unmapped_sends_once(self):
         c = _client()
         c.emit(Message("some.topic", {"x": 1}))
         self.assertEqual(_sent_types(c), ["some.topic"])
@@ -72,6 +83,107 @@ class TestEmitTranslation(unittest.TestCase):
         c = _client(modernize=False, emit_legacy=False)
         c.emit(Message("speak", {"utterance": "hi"}))
         self.assertEqual(_sent_types(c), ["speak"])
+
+
+class TestReceiveSideBridge(unittest.TestCase):
+    def test_one_wire_message_fires_raw_firehose_once(self):
+        c = _recv_client()
+        firehose = []
+        c.emitter.on("message", firehose.append)
+
+        c.on_message(
+            Message("speak", {"utterance": "hi"}).serialize()
+        )
+
+        self.assertEqual(len(firehose), 1)
+
+    def test_legacy_wire_message_reaches_spec_listener(self):
+        c = _recv_client()
+        seen = []
+        c.on("ovos.utterance.speak", seen.append)
+
+        c.on_message(
+            Message("speak", {"utterance": "hi"}).serialize()
+        )
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].msg_type, "ovos.utterance.speak")
+        self.assertEqual(seen[0].data, {"utterance": "hi"})
+
+    def test_spec_wire_message_reaches_legacy_listener(self):
+        c = _recv_client()
+        seen = []
+        c.on("recognizer_loop:utterance", seen.append)
+
+        c.on_message(
+            Message(
+                "ovos.utterance.handle",
+                {"utterances": ["hi"]},
+            ).serialize()
+        )
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].msg_type, "recognizer_loop:utterance")
+
+    def test_local_counterpart_is_not_sent_back_to_websocket(self):
+        c = _recv_client()
+
+        c.on_message(
+            Message("speak", {"utterance": "hi"}).serialize()
+        )
+
+        c.client.send.assert_not_called()
+
+
+class TestReceiveSidePayloadTranslation(unittest.TestCase):
+    def _capture(self, client, topic):
+        seen = []
+        client.on(topic, seen.append)
+        return seen
+
+    def test_shape_changing_legacy_to_spec_reshapes_payload(self):
+        c = _recv_client()
+        seen = self._capture(c, "ovos.intent.deregister")
+
+        c.on_message(
+            Message(
+                "detach_intent",
+                {"intent_name": "skill.foo:HelloIntent"},
+            ).serialize()
+        )
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(
+            seen[0].data,
+            {"skill_id": "skill.foo", "intent_name": "HelloIntent"},
+        )
+
+    def test_shape_changing_spec_to_legacy_reshapes_payload(self):
+        c = _recv_client()
+        seen = self._capture(c, "detach_intent")
+
+        c.on_message(
+            Message(
+                "ovos.intent.deregister",
+                {"skill_id": "skill.foo", "intent_name": "HelloIntent"},
+            ).serialize()
+        )
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(
+            seen[0].data,
+            {"intent_name": "skill.foo:HelloIntent"},
+        )
+
+    def test_payload_compatible_rename_stays_equivalent(self):
+        c = _recv_client()
+        seen = self._capture(c, "ovos.utterance.speak")
+        data = {"utterance": "hi", "lang": "en-us"}
+
+        c.on_message(Message("speak", dict(data)).serialize())
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].data, data)
 
 
 class TestHandlerDedup(unittest.TestCase):
