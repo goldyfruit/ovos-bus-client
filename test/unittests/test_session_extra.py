@@ -217,6 +217,23 @@ class TestSessionSerialization(TestCase):
         self.assertEqual(d["persona_id"], "p1")
         self.assertEqual(d["site_id"], "kitchen")
 
+    def test_serialize_omits_none_without_dropping_empty_or_false_values(self):
+        s = Session("sid", persona_id=None)
+        s.lang = None
+        s.system_unit = None
+        s.location_preferences = {}
+        s.is_speaking = False
+
+        d = s.serialize()
+
+        self.assertNotIn("persona_id", d)
+        self.assertNotIn("lang", d)
+        self.assertNotIn("system_unit", d)
+        self.assertEqual(d["location"], {})
+        self.assertEqual(d["active_skills"], [])
+        self.assertIs(d["is_speaking"], False)
+        self.assertFalse(any(value is None for value in d.values()))
+
     def test_deserialize_roundtrip(self):
         s = Session("sid", lang="en-us", site_id="lab")
         s.activate_skill("skill.x")
@@ -232,6 +249,14 @@ class TestSessionSerialization(TestCase):
         sess = Session.from_message(msg)
         self.assertEqual(sess.session_id, "from-msg")
         self.assertEqual(sess.site_id, "A")
+
+    def test_from_message_does_not_inject_null_lang(self):
+        msg = Message("t", data={}, context={"session": {"session_id": "sid"}})
+
+        sess = Session.from_message(msg)
+
+        self.assertNotIn("lang", msg.context["session"])
+        self.assertIsInstance(sess.lang, str)
 
     def test_from_message_falls_back_to_default_when_no_context(self):
         _reset_session_manager()

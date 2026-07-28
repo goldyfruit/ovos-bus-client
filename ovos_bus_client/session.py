@@ -461,8 +461,10 @@ class Session:
                 - "blacklisted_skills": list of skill IDs that are blacklisted
                 - "blacklisted_intents": list of intent names that are blacklisted
         """
-        # safe for json dumping
-        return {
+        # SESSION-1 §2.1: optional fields without a value are represented by
+        # omission on the wire, never by JSON null.  Keep empty containers and
+        # false booleans because they carry legacy state for older consumers.
+        data = {
             "active_skills": self.active_skills,
             "utterance_states": self.utterance_states,
             "session_id": self.session_id,
@@ -480,6 +482,8 @@ class Session:
             "blacklisted_skills": self.blacklisted_skills,
             "blacklisted_intents": self.blacklisted_intents
         }
+        return {key: value for key, value in data.items()
+                if value is not None}
 
     def update_history(self, message: Message = None):
         """
@@ -547,7 +551,7 @@ class Session:
             lang = message.context.get("lang") or \
                    message.data.get("lang")
             sess = message.context["session"]
-            if "lang" not in sess:
+            if "lang" not in sess and lang is not None:
                 sess["lang"] = lang
             sess = Session.deserialize(sess)
         else:
@@ -557,7 +561,7 @@ class Session:
                           f"`message.context` where emitted. "
                           f"context={message.context}")
             else:
-                LOG.warning(f"No message found, using default session")
+                LOG.warning("No message found, using default session")
             # new session
             sess = SessionManager.default_session
         if sess and sess.expired():
@@ -609,7 +613,7 @@ class SessionManager:
         """
         with SessionManager.__lock:
             sess = Session("default")
-            LOG.info(f"Default Session reset")
+            LOG.info("Default Session reset")
             SessionManager.default_session = SessionManager.sessions["default"] = sess
             SessionManager.sync()
         return SessionManager.default_session
@@ -622,7 +626,7 @@ class SessionManager:
         @param make_default: if true, set default_session to sess
         """
         if not sess:
-            raise ValueError(f"Expected Session and got None")
+            raise ValueError("Expected Session and got None")
 
         if make_default:
             sess.session_id = "default"
@@ -653,9 +657,9 @@ class SessionManager:
                     SessionManager.sessions[msg_sess.session_id] = msg_sess
                     return msg_sess
             else:
-                LOG.debug(f"No session from message, use default session")
+                LOG.debug("No session from message, use default session")
         else:
-            LOG.debug(f"No message, use default session")
+            LOG.debug("No message, use default session")
 
         return sess
 
