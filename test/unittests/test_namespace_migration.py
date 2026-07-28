@@ -9,7 +9,7 @@ once — without suppressing two genuine same-topic events.
 """
 import json
 import unittest
-from threading import Event
+from threading import Event, RLock
 from unittest.mock import MagicMock, patch
 
 from pyee import EventEmitter
@@ -31,6 +31,7 @@ def _client(modernize=True, emit_legacy=True, emitter=None):
     c.connected_event.set()
     c.started_running = True
     c.session_id = "default"
+    c._send_lock = RLock()
     return c
 
 
