@@ -27,6 +27,13 @@ _ENTITY = {"data": [["value", "key"]], "key": "key", "confidence": 1.0}
 
 
 class TestMalformedIntentContext(unittest.TestCase):
+    """``Session.deserialize`` drops a malformed ``context`` and keeps the rest.
+
+    Every case in ``MALFORMED`` must come back as a session that still has its
+    ``session_id`` and ``lang`` and an empty frame stack, without a parser
+    builtin escaping to the caller.
+    """
+
     # Each of these makes the parser raise a DIFFERENT builtin, which is why
     # the guard names three rather than catching the one that was noticed.
     MALFORMED = (
@@ -119,6 +126,11 @@ class TestMalformedIntentContext(unittest.TestCase):
                     "value", "a valid context entry was discarded")
 
     def test_a_non_object_context_is_omitted_too(self):
+        """A scalar ``context`` is dropped on its own, the identity is kept.
+
+        This is the narrowest malformed shape: ``deserialize`` used to raise
+        on it before the frame stack was ever looked at.
+        """
         session = Session.deserialize({"session_id": "s-2", "context": 5})
         self.assertEqual(session.session_id, "s-2")
         self.assertEqual(len(session.context.frame_stack), 0)
@@ -153,6 +165,11 @@ class TestMalformedIntentContext(unittest.TestCase):
             "null")
 
     def test_a_well_formed_session_is_untouched(self):
+        """An empty, absent or empty-stack ``context`` parses as before.
+
+        These are the shapes real peers send most often, so the shape check
+        must not log or discard anything for them.
+        """
         self.assertEqual(
             Session.deserialize({"session_id": "abc", "context": {}}).session_id,
             "abc")

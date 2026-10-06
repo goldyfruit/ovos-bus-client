@@ -980,6 +980,15 @@ def _require_fold_number(value, what: str) -> None:
     so both are coerced to float there. A JSON integer too large for a float
     (``10**400``) passes an ``isinstance(int)`` check and then raises
     ``OverflowError`` inside ``Session.__init__``, after this guard.
+
+    Args:
+        value: the candidate number; ``None`` is accepted because the fold
+            substitutes the current time for a missing timestamp.
+        what: the field name used in the error message.
+
+    Raises:
+        TypeError: ``value`` is neither ``None`` nor an int/float.
+        ValueError: ``value`` is an int too large to convert to a float.
     """
     if value is None:
         return
@@ -1008,6 +1017,18 @@ def _validate_legacy_context_shape(raw) -> None:
     ``.get`` on each), and each timestamp a number or null (the fold adds the
     timeout to it). Tuples are accepted alongside lists because an in-process
     round trip never passes through JSON.
+
+    Returns normally only when ``IntentContextManager.deserialize`` followed by
+    the ``Session.__init__`` fold cannot raise for shape reasons.
+
+    Args:
+        raw: the legacy ``context`` value taken from the carrier (``None``
+            already replaced with ``{}`` by the caller).
+
+    Raises:
+        TypeError: a container or scalar has the wrong type.
+        ValueError: a ``frame_stack`` item is not a pair, or a number
+            overflows a float.
     """
     if not isinstance(raw, dict):
         raise TypeError(f"context must be a mapping, got {type(raw).__name__}")
